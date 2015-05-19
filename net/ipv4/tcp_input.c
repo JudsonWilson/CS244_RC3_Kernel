@@ -3568,9 +3568,10 @@ static int tcp_ack_rc3(struct sock *sk, struct sk_buff *skb)
 {
   struct tcp_sock *tp = tcp_sk(sk);
   u32 prior_snd_una = tp->snd_una;
+  s32 sack_rtt_dummy;
 
   if (TCP_SKB_CB(skb)->sacked) {
-    tcp_sacktag_write_queue(sk, skb, prior_snd_una);
+    tcp_sacktag_write_queue(sk, skb, prior_snd_una, &sack_rtt_dummy);
   }
 
   return 0;
