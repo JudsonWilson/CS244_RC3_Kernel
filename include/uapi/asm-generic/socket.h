@@ -80,4 +80,8 @@
 
 #define SO_MAX_PACING_RATE	47
 
+//added by Radhika
+#define SO_RC3			60
+#define SO_LOGME		61
+#define SO_LOGTIME		62
 #endif /* __ASM_GENERIC_SOCKET_H */

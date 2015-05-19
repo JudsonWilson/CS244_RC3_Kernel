@@ -943,6 +943,9 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		}
 	}
 
+	//Radhika: ensuring packets have highest priority here
+        skb->priority = 0;
+
 	tcp_options_write((__be32 *)(th + 1), tp, &opts);
 	if (likely((tcb->tcp_flags & TCPHDR_SYN) == 0))
 		TCP_ECN_send(sk, skb, tcp_header_size);
@@ -968,6 +971,12 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
 			      tcp_skb_pcount(skb));
 
+	
+
+	//Radhika: logging 	
+	if(sk->sk_logme)
+		printk(KERN_DEBUG "Radhika: tcp_transmit_skb: Sending out packet with priority = %u and seq = %u, ack = %u, len = %u, flags(syn, ack, fin) = (%u, %u, %u), window = %u \n", skb->priority, ntohl(th->seq), ntohl(th->ack_seq), skb->len, th->syn, th->ack, th->fin, th->window);
+
 	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
 	if (likely(err <= 0))
 		return err;
@@ -976,6 +985,137 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 
 	return net_xmit_eval(err);
 }
+
+//Added by Radhika: low priority assigned here
+static int tcp_transmit_skb_rc3(struct sock *sk, struct sk_buff *skb, int clone_it,
+			    gfp_t gfp_mask, __u32 rc3_priority)
+{
+	const struct inet_connection_sock *icsk = inet_csk(sk);
+	struct inet_sock *inet;
+	struct tcp_sock *tp;
+	struct tcp_skb_cb *tcb;
+	struct tcp_out_options opts;
+	unsigned tcp_options_size, tcp_header_size;
+	struct tcp_md5sig_key *md5;
+	struct tcphdr *th;
+	int err;
+
+	BUG_ON(!skb || !tcp_skb_pcount(skb));
+
+	/* If congestion control is doing timestamping, we must
+	 * take such a timestamp before we potentially clone/copy.
+	 */
+	if (icsk->icsk_ca_ops->flags & TCP_CONG_RTT_STAMP)
+		__net_timestamp(skb);
+
+	if (likely(clone_it)) {
+		if (unlikely(skb_cloned(skb)))
+			skb = pskb_copy(skb, gfp_mask);
+		else
+			skb = skb_clone(skb, gfp_mask);
+		if (unlikely(!skb))
+			return -ENOBUFS;
+	}
+
+	inet = inet_sk(sk);
+	tp = tcp_sk(sk);
+	tcb = TCP_SKB_CB(skb);
+	memset(&opts, 0, sizeof(opts));
+
+	if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
+		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
+	else
+		tcp_options_size = tcp_established_options(sk, skb, &opts,
+							   &md5);
+	tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
+
+	if (tcp_packets_in_flight(tp) == 0)
+		tcp_ca_event(sk, CA_EVENT_TX_START);
+
+	/* if no packet is in qdisc/device queue, then allow XPS to select
+	 * another queue.
+	 */
+	skb->ooo_okay = sk_wmem_alloc_get(sk) == 0;
+
+	skb_push(skb, tcp_header_size);
+	skb_reset_transport_header(skb);
+	skb_set_owner_w(skb, sk);
+
+	/* Build TCP header and checksum it. */
+	th = tcp_hdr(skb);
+	th->source		= inet->inet_sport;
+	th->dest		= inet->inet_dport;
+	th->seq			= htonl(tcb->seq);
+	th->ack_seq		= htonl(tp->rcv_nxt);
+	*(((__be16 *)th) + 6)	= htons(((tcp_header_size >> 2) << 12) |
+					tcb->tcp_flags);
+
+	if (unlikely(tcb->tcp_flags & TCPHDR_SYN)) {
+		/* RFC1323: The window in SYN & SYN/ACK segments
+		 * is never scaled.
+		 */
+		th->window	= htons(min(tp->rcv_wnd, 65535U));
+	} else {
+		th->window	= htons(tcp_select_window(sk));
+	}
+	th->check		= 0;
+	th->urg_ptr		= 0;
+
+	/* The urg_mode check is necessary during a below snd_una win probe */
+	if (unlikely(tcp_urg_mode(tp) && before(tcb->seq, tp->snd_up))) {
+		if (before(tp->snd_up, tcb->seq + 0x10000)) {
+			th->urg_ptr = htons(tp->snd_up - tcb->seq);
+			th->urg = 1;
+		} else if (after(tcb->seq + 0xFFFF, tp->snd_nxt)) {
+			th->urg_ptr = htons(0xFFFF);
+			th->urg = 1;
+		}
+	}
+
+	//Radhika: assigning priority 
+        skb->priority = rc3_priority;
+	//Radhika: marking push flag as 0
+      	TCP_SKB_CB(skb)->tcp_flags &= (!TCPHDR_PSH);
+	
+	tcp_options_write((__be32 *)(th + 1), tp, &opts);
+	if (likely((tcb->tcp_flags & TCPHDR_SYN) == 0))
+		TCP_ECN_send(sk, skb, tcp_header_size);
+
+#ifdef CONFIG_TCP_MD5SIG
+	/* Calculate the MD5 hash, as we have all we need now */
+	if (md5) {
+		sk_nocaps_add(sk, NETIF_F_GSO_MASK);
+		tp->af_specific->calc_md5_hash(opts.hash_location,
+					       md5, sk, NULL, skb);
+	}
+#endif
+
+	icsk->icsk_af_ops->send_check(sk, skb);
+
+	if (likely(tcb->tcp_flags & TCPHDR_ACK))
+		tcp_event_ack_sent(sk, tcp_skb_pcount(skb));
+
+	if (skb->len != tcp_header_size)
+		tcp_event_data_sent(tp, sk);
+
+	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
+		TCP_ADD_STATS(sock_net(sk), TCP_MIB_OUTSEGS,
+			      tcp_skb_pcount(skb));
+
+	
+        //Radhika: logging 	
+	if(sk->sk_logme)
+		printk(KERN_DEBUG "Radhika: tcp_transmit_skb_rc3: Sending out packet with priority = %u and seq = %u, ack = %u, len = %u, flags(syn, ack, fin) = (%u, %u, %u), window = %u \n", skb->priority, ntohl(th->seq), ntohl(th->ack_seq), skb->len, th->syn, th->ack, th->fin, th->window);
+
+	err = icsk->icsk_af_ops->queue_xmit(skb, &inet->cork.fl);
+	if (likely(err <= 0))
+		return err;
+
+	tcp_enter_cwr(sk, 1);
+
+	return net_xmit_eval(err);
+}
+
 
 /* This routine just queues the buffer for sending.
  *
@@ -1923,6 +2063,9 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 		TCP_SKB_CB(skb)->when = tcp_time_stamp;
 
+		//Radhika: All packets sent out through this routine must have priority 0
+		skb->priority = 0;		
+
 		if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
 			break;
 
@@ -2095,6 +2238,79 @@ void tcp_push_one(struct sock *sk, unsigned int mss_now)
 
 	tcp_write_xmit(sk, mss_now, TCP_NAGLE_PUSH, 1, sk->sk_allocation);
 }
+
+
+/* Radhika: Sending out low priority RC3 packets*/
+void tcp_push_rc3(struct sock *sk, unsigned int mss_now)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+    struct sk_buff *skb;
+    int tso_segs;
+    __u32 packetCounter, rc3_priority;
+    __be32 maxseq;
+    
+    skb = tcp_write_queue_tail(sk);
+    maxseq = TCP_SKB_CB(skb)->end_seq;
+    
+    while(1)
+    {    
+	
+      if(skb->len > mss_now)
+      {
+      		if(sk->sk_logme)
+			printk(KERN_DEBUG "Radhika: tcp_push_rc3: Big packet received: Length = %u, seq = %u, end_seq = %u\n", skb->len, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
+      }
+
+      if((TCP_SKB_CB(skb)->seq < tp->snd_nxt) || (TCP_SKB_CB(skb)->seq < tp->snd_rc3))
+      {    
+        if(sk->sk_logme)
+		printk(KERN_DEBUG "Radhika: tcp_push_rc3: no more additional data to send\n");
+        break;
+      }    
+
+      packetCounter = (maxseq - TCP_SKB_CB(skb)->seq) / mss_now;
+      rc3_priority = 1; 
+
+      if(packetCounter <= 40)
+        rc3_priority = 1; 
+      else 
+      {    
+          if(packetCounter <= 440) 
+              rc3_priority = 2; 
+          else 
+          {    
+            if(packetCounter <= 4440)
+              rc3_priority = 3; 
+            else 
+              rc3_priority = 4; 
+          }    
+      }    
+        
+
+      if(sk->sk_logme) 
+      		printk(KERN_DEBUG "Radhika: tcp_push_rc3: Sending packet with start seq = %u, end seq = %u, packetcount = %d at priority = %d\n", TCP_SKB_CB(skb)->seq,  TCP_SKB_CB(skb)->end_seq, packetCounter, rc3_priority);
+
+      //Sending out the packet:
+      tso_segs = tcp_init_tso_segs(sk, skb, mss_now);
+      if(sk->sk_logme) 
+      		printk(KERN_DEBUG "Radhika: tcp_push_rc3: Number of tso_segs = %d\n", tso_segs);
+      if(likely(!tcp_transmit_skb_rc3(sk, skb, 1, sk->sk_allocation, rc3_priority)))
+      {
+	 if(sk->sk_logme)
+         	printk(KERN_DEBUG "Radhika: tcp_push_rc3: Sent successfully\n");
+      }
+      else if(sk->sk_logme)
+         printk(KERN_DEBUG "Radhika: tcp_push_rc3: Error in sending\n");
+
+      if(skb_queue_is_first(&sk->sk_write_queue, skb))
+	 break;
+      else
+	 skb = skb_queue_prev(&sk->sk_write_queue, skb);
+    }    
+    tp->snd_rc3 = maxseq -  mss_now;
+}
+
+
 
 /* This function returns the amount that we can raise the
  * usable window based on the following constraints
@@ -2382,6 +2598,9 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb)
 	 * is still in somebody's hands, else make a clone.
 	 */
 	TCP_SKB_CB(skb)->when = tcp_time_stamp;
+
+	//Radhika: priority should be 0 when packet is retransmitted like this
+	skb->priority = 0;
 
 	/* make sure skb->data is aligned on arches that require it
 	 * and check if ack-trimming & collapsing extended the headroom
@@ -3088,6 +3307,43 @@ void tcp_send_ack(struct sock *sk)
 	TCP_SKB_CB(buff)->when = tcp_time_stamp;
 	tcp_transmit_skb(sk, buff, 0, sk_gfp_atomic(sk, GFP_ATOMIC));
 }
+
+/* Radhika: Send a low priority ack*/
+void tcp_send_ack_rc3(struct sock *sk, __u32 rc3_priority)
+{
+	struct sk_buff *buff;
+
+ 	if(sk->sk_logme)
+  		printk(KERN_DEBUG "Radhika: tcp_send_ack_rc3: Sending ack with priority %d", rc3_priority);
+
+	/* If we have been reset, we may not send again. */
+	if (sk->sk_state == TCP_CLOSE)
+		return;
+
+	/* We are not putting this on the write queue, so
+	 * tcp_transmit_skb() will set the ownership to this
+	 * sock.
+	 */
+	buff = alloc_skb(MAX_TCP_HEADER, GFP_ATOMIC);
+	if (buff == NULL) {
+		inet_csk_schedule_ack(sk);
+		inet_csk(sk)->icsk_ack.ato = TCP_ATO_MIN;
+		inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK,
+					  TCP_DELACK_MAX, TCP_RTO_MAX);
+		return;
+	}
+
+	/* Reserve space for headers and prepare control bits. */
+	skb_reserve(buff, MAX_TCP_HEADER);
+	tcp_init_nondata_skb(buff, tcp_acceptable_seq(sk), TCPHDR_ACK);
+
+	/* Send it off, this clears delayed acks for us. */
+	TCP_SKB_CB(buff)->when = tcp_time_stamp;
+	tcp_transmit_skb_rc3(sk, buff, 0, GFP_ATOMIC, rc3_priority);
+}
+
+
+
 
 /* This routine sends a packet with an out of date sequence
  * number. It assumes the other end will try to ack it.

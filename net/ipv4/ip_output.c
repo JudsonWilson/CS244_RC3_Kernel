@@ -386,9 +386,18 @@ packet_routed:
 		ip_options_build(skb, &inet_opt->opt, inet->inet_daddr, rt, 0);
 	}
 
+	//Radhika: Adding priorty to tos header in the DSCP field
+	if(sk->sk_rc3)
+		iph->tos = iph->tos | (skb->priority << 2); //
+	else
+		skb->priority = sk->sk_priority;
+
+	
+	if(sk->sk_logme)
+		printk(KERN_DEBUG "Radhika: ip_queue_xmit: Sending out packet with priority = %u\n", skb->priority);	
+
 	ip_select_ident_segs(skb, sk, skb_shinfo(skb)->gso_segs ?: 1);
 
-	skb->priority = sk->sk_priority;
 	skb->mark = sk->sk_mark;
 
 	res = ip_local_out(skb);

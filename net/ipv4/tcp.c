@@ -1080,6 +1080,9 @@ int tcp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
 
+	if(sk->sk_logme)
+		printk(KERN_DEBUG "Radhika: tcp_sendmsg: Message size = %zu, msg iov length = %zu, mss_now = %d\n", size, msg->msg_iovlen, mss_now);
+
 	/* Ok commence sending. */
 	iovlen = msg->msg_iovlen;
 	iov = msg->msg_iov;
@@ -1207,6 +1210,11 @@ new_segment:
 			TCP_SKB_CB(skb)->end_seq += copy;
 			skb_shinfo(skb)->gso_segs = 0;
 
+			if(sk->sk_logme)
+				printk(KERN_DEBUG "Radhika: tcp_sendmsg: Length of packet added = %u\n", skb->len);
+			//Radhika: initializing packet priority as 0
+			skb->priority = 0;
+
 			from += copy;
 			copied += copy;
 			if ((seglen -= copy) == 0 && iovlen == 0)
@@ -1214,6 +1222,7 @@ new_segment:
 
 			if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
 				continue;
+
 
 			if (forced_push(tp)) {
 				tcp_mark_push(tp, skb);
@@ -1225,9 +1234,19 @@ new_segment:
 wait_for_sndbuf:
 			set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 wait_for_memory:
+			if(sk->sk_logme)
+				printk (KERN_DEBUG "Radhika: tcp_sendmsg: I am out of memory\n");
 			if (copied)
+			{
 				tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH);
-
+				//Radhika: calling function to send out additional packets
+				if(sk->sk_rc3)
+				{
+					if(sk->sk_logme)
+						printk(KERN_DEBUG "Radhika: tcp_sendmsg: Calling tcp_push_rc3\n");
+					tcp_push_rc3(sk, mss_now);
+				}
+			}
 			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 				goto do_error;
 
@@ -1237,7 +1256,16 @@ wait_for_memory:
 
 out:
 	if (copied)
+	{
 		tcp_push(sk, flags, mss_now, tp->nonagle);
+		//Radhika: calling function to send out additional packets
+		if(sk->sk_rc3)
+		{
+			if(sk->sk_logme)
+				printk(KERN_DEBUG "Radhika: tcp_sendmsg: Calling tcp_push_rc3\n");
+			tcp_push_rc3(sk, mss_now);
+		}
+	}
 out_nopush:
 	release_sock(sk);
 	return copied + copied_syn;
@@ -2974,6 +3002,7 @@ void __init tcp_init(void)
 	int max_rshare, max_wshare, cnt;
 	unsigned int i;
 
+	printk(KERN_DEBUG "Hello TCP world\n");
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) > sizeof(skb->cb));
 
 	percpu_counter_init(&tcp_sockets_allocated, 0);

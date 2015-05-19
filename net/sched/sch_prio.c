@@ -70,6 +70,8 @@ prio_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	struct Qdisc *qdisc;
 	int ret;
 
+       	//printk(KERN_DEBUG "Radhika: prio_enqueue: Enqueuing packet with priority = %u\n", skb->priority);
+	
 	qdisc = prio_classify(skb, sch, &ret);
 #ifdef CONFIG_NET_CLS_ACT
 	if (qdisc == NULL) {
@@ -116,6 +118,7 @@ static struct sk_buff *prio_dequeue(struct Qdisc *sch)
 		if (skb) {
 			qdisc_bstats_update(sch, skb);
 			sch->q.qlen--;
+               		//printk(KERN_DEBUG "Radhika: prio_enqueue: Dequeuing packet with priority = %u from band = %d\n", skb->priority, prio);
 			return skb;
 		}
 	}

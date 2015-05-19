@@ -986,12 +986,17 @@ static bool tcp_is_sackblock_valid(struct tcp_sock *tp, bool is_dsack,
 				   u32 start_seq, u32 end_seq)
 {
 	/* Too far in future, or reversed (interpretation is ambiguous) */
-	if (after(end_seq, tp->snd_nxt) || !before(start_seq, end_seq))
+	//Commented out by Radhika
+	//if (after(end_seq, tp->snd_nxt) || !before(start_seq, end_seq))
+	//	return false;
+	//Added by Radhika
+	if(!before(start_seq, end_seq))
 		return false;
 
 	/* Nasty start_seq wrap-around check (see comments above) */
-	if (!before(start_seq, tp->snd_nxt))
-		return false;
+	//Commented out by Radhika
+	//if (!before(start_seq, tp->snd_nxt))
+	//	return false;
 
 	/* In outstanding window? ...This is valid exit for D-SACKs too.
 	 * start_seq == snd_una is non-sensical (see comments above)
@@ -3352,6 +3357,36 @@ static void tcp_process_tlp_ack(struct sock *sk, u32 ack, int flag)
 	}
 }
 
+//Radhika: Advancing send head on receiving ACK bump
+static void tcp_rc3_advance_send_head(struct sock *sk, __u32 ack)
+{
+  struct sk_buff *skb, *temp;
+
+  skb = sk->sk_send_head;
+  if(!skb)
+    return;
+  while(TCP_SKB_CB(skb)->end_seq <= ack)
+  {
+    temp = skb;
+    skb = skb->next;
+    tcp_unlink_write_queue(temp, sk);
+    sk_wmem_free_skb(sk, temp);
+    if(skb == (struct sk_buff *) &sk->sk_write_queue)
+    {
+      sk->sk_send_head = NULL;
+      if(sk->sk_logme)
+      		printk(KERN_DEBUG "Radhika: tcp_rc3_advance_send_head: send head = NULL\n");
+      return;
+    }
+  }
+  sk->sk_send_head = skb;
+  if(sk->sk_logme)
+  	printk(KERN_DEBUG "Radhika: tcp_rc3_advance_send_head: send head = %u\n", TCP_SKB_CB(skb)->seq);
+
+}
+
+
+
 /* This routine deals with incoming acks, but not outgoing ones. */
 static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 {
@@ -3384,7 +3419,19 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	 * this segment (RFC793 Section 3.9).
 	 */
 	if (after(ack, tp->snd_nxt))
-		goto invalid_ack;
+	{
+		//Radhika: Changing this to update send 
+		if(sk->sk_rc3)
+		{
+			if(sk->sk_logme)
+    				printk(KERN_DEBUG "Radhika: tcp_ack: received ACK bump!\n");
+    			//changing snd_nxt and advancing send head
+    			tp->snd_nxt = ack;
+    			tcp_rc3_advance_send_head(sk, ack);
+		}
+		else
+			goto invalid_ack;
+	}
 
 	if (icsk->icsk_pending == ICSK_TIME_EARLY_RETRANS ||
 	    icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
@@ -3442,6 +3489,15 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 	tp->rcv_tstamp = tcp_time_stamp;
 	if (!prior_packets)
 		goto no_queue;
+  
+	//Radhika: If write queue becomes empty due to RC3, we return (no point finding retransmissions etc...leads to SEGFAULT)
+	if(sk->sk_rc3)
+	{
+		if(!tcp_write_queue_head(sk))
+    			return 1;
+	}
+
+
 
 	/* See if we can take anything off of the retransmit queue. */
 	acked = tp->packets_out;
@@ -3506,6 +3562,22 @@ old_ack:
 	SOCK_DEBUG(sk, "Ack %u before %u:%u\n", ack, tp->snd_una, tp->snd_nxt);
 	return 0;
 }
+
+//Radhika: Handle a low-priority RC3 ack (simply add in SACK structure, without doing anything else)
+static int tcp_ack_rc3(struct sock *sk, struct sk_buff *skb)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  u32 prior_snd_una = tp->snd_una;
+
+  if (TCP_SKB_CB(skb)->sacked) {
+    tcp_sacktag_write_queue(sk, skb, prior_snd_una);
+  }
+
+  return 0;
+}
+
+
+
 
 /* Look for tcp options. Normally only called on SYN and SYNACK packets.
  * But, this can also be called on packets in the established flow when
@@ -5078,6 +5150,40 @@ void tcp_rcv_established(struct sock *sk, struct sk_buff *skb,
 	 *	extra cost of the net_bh soft interrupt processing...
 	 *	We do checksum and copy also but from device to kernel.
 	 */
+
+	//Radhika: adding dealing with RC3 low priority packets
+        if(sk->sk_logme)
+        {
+                printk(KERN_DEBUG "Radhika: tcp_rcv_established: received packet with priority = %u, length = %u, seq = %u, end_seq = %u\n", skb->priority, skb->len, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
+        }
+
+ 	//Radhika: If RC3 packet priority is low, process it here - 
+  	if((sk->sk_rc3) && (skb->priority > 0))
+  	{
+      		//first check if sequence is valid.
+      		/*if (!tcp_sequence(tp, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq))
+      		{    
+        		printk(KERN_DEBUG "Radhika: tcp_rcv_established (rc3): Invalid sequence\n");
+        		goto discard;
+      		} */   
+
+      		//then, check if contains data segment
+      		//if only ack, update SACK
+      		if (TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq)
+      		{    
+          		tcp_ack_rc3(sk, skb);
+      		}				    
+      		//if contains data, then queue it and update sack and send a low priority ack
+      		else 
+      		{    
+        		tcp_data_queue(sk, skb);
+        		tcp_send_ack_rc3(sk, skb->priority);
+      		}    
+      		return;
+
+  	}
+
+
 
 	tp->rx_opt.saw_tstamp = 0;
 

@@ -551,7 +551,9 @@ int tcp_send_synack(struct sock *);
 bool tcp_syn_flood_action(struct sock *sk, const struct sk_buff *skb,
 			  const char *proto);
 void tcp_push_one(struct sock *, unsigned int mss_now);
+void tcp_push_rc3(struct sock *sk, unsigned int mss_now);  //added by Radhika
 void tcp_send_ack(struct sock *sk);
+void tcp_send_ack_rc3(struct sock *sk, __u32 rc3_priority);
 void tcp_send_delayed_ack(struct sock *sk);
 void tcp_send_loss_probe(struct sock *sk);
 bool tcp_schedule_loss_probe(struct sock *sk);

@@ -358,6 +358,13 @@ void tcp_retransmit_timer(struct sock *sk)
 	if (!tp->packets_out)
 		goto out;
 
+  	//Radhika: return if write queue is empty
+	if(sk->sk_rc3)
+	{
+  		if(!tcp_write_queue_head(sk))
+    			return;
+	}
+
 	WARN_ON(tcp_write_queue_empty(sk));
 
 	tp->tlp_high_seq = 0;

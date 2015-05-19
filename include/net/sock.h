@@ -419,6 +419,13 @@ struct sock {
 	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);
 	void                    (*sk_destruct)(struct sock *sk);
+
+	int			sk_rc3;   //Added by Radhika
+	int			sk_logme;   //Added by Radhika
+	int			sk_logtime;   //Added by Radhika
+	int			sk_myCount;   //Added by Radhika
+	unsigned long long	sk_myStartTime;   //Added by Radhika
+
 };
 
 #define __sk_user_data(sk) ((*((void __rcu **)&(sk)->sk_user_data)))
