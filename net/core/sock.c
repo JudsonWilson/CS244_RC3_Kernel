@@ -795,6 +795,31 @@ set_rcvbuf:
 			ret = -EPERM;
 		break;
 
+	//Radhika: adding option to enable RC3
+	case SO_RC3:	
+		if(val > 0)
+			sk->sk_rc3 = 1;
+		else
+			sk->sk_rc3 = 0;
+		break;
+
+	//Radhika: adding option to enable my logging
+	case SO_LOGME:	
+		if(val > 0)
+			sk->sk_logme = 1;
+		else
+			sk->sk_logme = 0;
+		break;
+
+	//Radhika: adding option to enable my logging
+	case SO_LOGTIME:	
+		if(val > 0)
+			sk->sk_logtime = 1;
+		else
+			sk->sk_logtime = 0;
+		break;
+
+
 	case SO_LINGER:
 		if (optlen < sizeof(ling)) {
 			ret = -EINVAL;	/* 1003.1g */
@@ -1070,6 +1095,21 @@ int sock_getsockopt(struct socket *sock, int level, int optname,
 
 	case SO_PRIORITY:
 		v.val = sk->sk_priority;
+		break;
+
+	//Radhika: getting rc3 enabled value
+	case SO_RC3:	
+		v.val = sk->sk_rc3;
+		break;
+	
+	//Radhika: getting logme enabled value
+	case SO_LOGME:	
+		v.val = sk->sk_logme;
+		break;
+	
+	//Radhika: getting logme enabled value
+	case SO_LOGTIME:	
+		v.val = sk->sk_logtime;
 		break;
 
 	case SO_LINGER:
